@@ -1,0 +1,57 @@
+import pandas as pd
+
+# Try importing mdl.lab3 and handle errors
+try:
+    import mdl.lab3
+    print("✅ Successfully imported mdl.lab3")
+except ImportError:
+    print("❌ Error: 'mdl.lab3' module not found. Ensure it's in the correct directory.")
+    mdl = None  # Prevent further usage
+
+# Check if `create_dataloader` exists
+if mdl and hasattr(mdl.lab3, "create_dataloader"):
+    print("✅ Function 'create_dataloader' exists.")
+    
+    try:
+        # Try loading dataset with the "leprechaun" style
+        train_loader, test_loader = mdl.lab3.create_dataloader(style="leprechaun")
+        print("✅ Dataset loaded successfully.")
+        
+        # Check dataset size
+        if len(train_loader.dataset) == 0:
+            print("⚠️ Warning: Dataset is empty!")
+        
+        # Try fetching a sample entry
+        sample = train_loader.dataset[0]  # Change index if needed
+        print(f"✅ Sample Data Loaded: {sample}")
+
+        # Extract and print question, answer, and style
+        question = sample.get('instruction', '❌ Missing "instruction"')
+        answer = sample.get('response', '❌ Missing "response"')
+        answer_style = sample.get('response_style', '❌ Missing "response_style"')
+
+        print(f"\n🔹 Question: {question}\n🔹 Answer: {answer}\n🔹 Style: {answer_style}")
+
+    except Exception as e:
+        print(f"❌ Error while loading dataset: {e}")
+
+else:
+    print("❌ Function 'create_dataloader' not found in mdl.lab3.")
+
+    # Try manual dataset loading from CSV
+    try:
+        df = pd.read_csv("your_dataset.csv")  # Change to correct path
+        print("✅ CSV Dataset Loaded Successfully!")
+
+        # Fetch a sample
+        sample = df.iloc[0]  # Change index if needed
+        question = sample.get("instruction", "❌ Missing 'instruction'")
+        answer = sample.get("response", "❌ Missing 'response'")
+        answer_style = sample.get("response_style", "❌ Missing 'response_style'")
+
+        print(f"\n🔹 Question: {question}\n🔹 Answer: {answer}\n🔹 Style: {answer_style}")
+
+    except FileNotFoundError:
+        print("❌ Error: CSV file not found. Provide the correct dataset path.")
+    except Exception as e:
+        print(f"❌ Unknown error loading CSV: {e}")
