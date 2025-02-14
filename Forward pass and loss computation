@@ -1,0 +1,45 @@
+import torch
+import torch.nn.functional as F
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# ✅ Load model & tokenizer (Change model if RAM is limited)
+model_id = "mistralai/Mistral-7B-Instruct-v0.1"  # Use a smaller model if needed
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto")
+
+# ✅ Function to compute forward pass & loss
+def forward_and_compute_loss(model, tokens, mask, context_length=512):
+    # 1️⃣ Truncate input
+    tokens, mask = tokens[:, :context_length], mask[:, :context_length]
+
+    # 2️⃣ Prepare input (x) and target (y)
+    x, y, mask = tokens[:, :-1], tokens[:, 1:], mask[:, 1:]
+
+    # 3️⃣ Forward pass through model
+    logits = model(x).logits  # Shape: (batch_size, seq_len-1, vocab_size)
+
+    # 4️⃣ Compute masked Cross-Entropy loss
+    loss = F.cross_entropy(
+        logits.view(-1, logits.size(-1)),  # Flatten logits
+        y.view(-1),                        # Flatten target tokens
+        reduction="none"                    # No mean yet (will mask later)
+    )
+
+    loss = loss[mask.view(-1)].mean()  # Mask out padding & non-answer tokens
+    return loss
+
+# ✅ Test Case: Generate Random Input Tokens
+def test_forward_loss():
+    batch_size, seq_len, vocab_size = 2, 10, 30522  # Example values
+    torch.manual_seed(42)
+
+    tokens = torch.randint(0, vocab_size, (batch_size, seq_len))  # Random tokens
+    mask = torch.randint(0, 2, (batch_size, seq_len))  # Random binary mask (0/1)
+
+    tokens, mask = tokens.to(model.device), mask.to(model.device)
+
+    loss = forward_and_compute_loss(model, tokens, mask)
+    print(f"Computed Loss: {loss.item():.4f}")
+
+# Run the test case
+test_forward_loss()
