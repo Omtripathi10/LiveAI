@@ -1,0 +1,9 @@
+# Define the templates
+template_without_answer = "<start_of_turn>user\n{question}<end_of_turn>\n<start_of_turn>model\n"
+template_with_answer = template_without_answer + "{answer}<end_of_turn>\n"
+
+# Test the template with a sample input
+formatted_output = template_with_answer.format(question="What is your name?", answer="My name is Gemma!")
+
+# Print the output
+print(formatted_output)
