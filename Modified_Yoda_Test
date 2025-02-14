@@ -1,0 +1,10 @@
+yoda_test_text = "Much to learn, you still have."
+tokens = tokenizer(yoda_test_text, return_tensors="pt").to(model.device)
+
+with torch.no_grad():
+    outputs = model(**tokens)
+    logits = outputs.logits[:, :-1]
+    targets = tokens.input_ids[:, 1:]
+    loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+
+print(f"Yoda test loglikelihood: {loss.item():.2f}")
