@@ -1,0 +1,118 @@
+import os
+import json
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+from tqdm import tqdm
+from multiprocessing import Pool
+from opik.evaluation.metrics import score_result
+from mdl.lab3 import LLMClient  # Ensure this is defined
+from torch.utils.data import DataLoader
+
+# 🔹 Setup Judge LLM
+OPENROUTER_API_KEY = "your_api_key_here"  # 🔹 Replace with your actual key
+judge_model = LLMClient(model="liquid/lfm-40b", api_key=OPENROUTER_API_KEY)
+
+# 🔹 Define Evaluation Function
+class LLMJudgeEvaluator:
+    def __init__(self, judge, system_prompt="You are an AI judge. Score the given response based on accuracy and style. Return a JSON object with {'score': <0-10>}"):
+        self.judge = judge
+        self.system_prompt = system_prompt
+        self.prompt_template = "Evaluate this text: {text}"
+
+    def score(self, text: str):
+        """Evaluate text using the judge LLM."""
+        try:
+            # ✅ Format the prompt
+            prompt = self.prompt_template.format(text=text)
+
+            # ✅ Call the judge LLM
+            response = self.judge.ask(
+                prompt=prompt,
+                system_prompt=self.system_prompt,
+                temperature=0.5,
+                stop=["}"]  # Stops at JSON end
+            )
+
+            # ✅ Ensure valid JSON response
+            response_text = response.strip() + "}"
+            res_dict = json.loads(response_text)
+
+            # ✅ Normalize score (0 to 1)
+            max_score = 10
+            score = res_dict.get("score", 0) / max_score
+            score = max(0.0, min(score, 1.0))  # Clip between 0 and 1
+
+            return score_result.ScoreResult(name="StyleScore", value=score)
+
+        except Exception as e:
+            print(f"Error during scoring: {e}")
+            return score_result.ScoreResult(name="StyleScore", value=0.0)
+
+# 🔹 Initialize Evaluator
+judge = LLMJudgeEvaluator(judge=judge_model)
+
+# 🔹 Scoring Function
+def scoring_function(text):
+    return judge.score(text).value
+
+# 🔹 Generate Model Samples
+def generate_samples_from_test(test_loader, num_samples):
+    samples = []
+    for test_sample in tqdm(test_loader, total=num_samples):
+        test_question = test_sample['instruction'][0]
+        with torch.no_grad():
+            generated = chat(test_question, only_answer=True, max_new_tokens=100)
+        samples.append(generated)
+        if len(samples) >= num_samples:
+            break
+    return samples
+
+# 🔹 Compute Scores in Parallel
+def compute_scores_in_parallel(samples):
+    with Pool(processes=10) as pool:
+        scores = pool.map(scoring_function, samples)
+    return scores
+
+# 🔹 Test Dataset (Sample)
+test_texts = [
+    "Tennis is a fun sport. But you must concentrate.",
+    "Fun sport, tennis is. But work hard, you must.",
+    "Hard to see, the dark side is."
+]
+
+# 🔹 Evaluate Test Cases
+for text in test_texts:
+    score = scoring_function(text)
+    print(f"{text} ==> Score: {score:.2f}")
+
+# 🔹 Prepare Data (For Real Evaluation)
+n_samples = 20  # Change as needed
+test_loader = DataLoader([{"instruction": ["What is the capital of France?"]}], batch_size=1, shuffle=True)  # Sample DataLoader
+train_loader = DataLoader([{"response": ["Paris"], "response_style": ["Paris, the capital is."]}], batch_size=1, shuffle=True)  # Sample DataLoader
+
+generated_samples = generate_samples_from_test(test_loader, num_samples=n_samples)
+base_samples = [sample['response'][0] for i, sample in enumerate(train_loader) if i < n_samples]
+style_samples = [sample['response_style'][0] for i, sample in enumerate(train_loader) if i < n_samples]
+
+# 🔹 Compute Scores
+base_scores = compute_scores_in_parallel(base_samples)
+print(f"Base: {np.mean(base_scores):.2f} ± {np.std(base_scores):.2f}")
+
+generated_scores = compute_scores_in_parallel(generated_samples)
+print(f"Gen: {np.mean(generated_scores):.2f} ± {np.std(generated_scores):.2f}")
+
+style_scores = compute_scores_in_parallel(style_samples)
+print(f"Train: {np.mean(style_scores):.2f} ± {np.std(style_scores):.2f}")
+
+# 🔹 Plot Score Distributions
+df = pd.DataFrame({
+    'Score': [*base_scores, *generated_scores, *style_scores],
+    'Type': ['Base']*len(base_scores) + ['Generated']*len(generated_scores) + ['Style']*len(style_scores)
+})
+
+sns.histplot(data=df, x='Score', hue='Type', multiple="dodge", bins=6, shrink=.8)
+plt.title('Distribution of Scores')
+plt.show()
