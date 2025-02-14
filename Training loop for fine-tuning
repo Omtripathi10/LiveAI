@@ -1,0 +1,90 @@
+import torch
+import torch.nn.functional as F
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from torch.utils.data import DataLoader, TensorDataset
+from peft import LoraConfig, get_peft_model
+from lion_pytorch import Lion  # Ensure Lion optimizer is installed
+
+# ✅ Load model & tokenizer
+model_id = "mistralai/Mistral-7B-Instruct-v0.1"  # Adjust for RAM
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto")
+
+# ✅ Apply LoRA
+def apply_lora(model):
+    lora_config = LoraConfig(
+        r=8,  # Rank of LoRA matrices
+        task_type="CAUSAL_LM",
+        target_modules=[
+            "q_proj", "o_proj", "k_proj", "v_proj", "gate_proj", "up_proj", "down_proj"
+        ],
+    )
+    return get_peft_model(model, lora_config)
+
+# ✅ Training function
+def train(model, dataloader, tokenizer, max_steps=200, context_length=512, learning_rate=1e-4):
+    losses = []
+    model = apply_lora(model)  # Apply LoRA
+
+    optimizer = Lion(model.parameters(), lr=learning_rate)
+
+    # Training loop
+    for step, batch in enumerate(dataloader):
+        question = batch["instruction"][0]
+        answer = batch["response"][0]
+
+        # Format text using correct template
+        template_with_answer = "Q: {}\nA: {}"
+        text = template_with_answer.format(question, answer)
+
+        # Tokenize input
+        ids = tokenizer(text, return_tensors="pt", return_offsets_mapping=True).to(model.device)
+
+        # Compute mask for loss calculation
+        answer_start = text.index(answer)
+        mask = ids["offset_mapping"][:, :, 0] >= answer_start
+
+        # Compute loss
+        loss = forward_and_compute_loss(model, ids["input_ids"], mask, context_length)
+
+        # Backpropagation
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        losses.append(loss.item())
+
+        # Monitor training
+        if step % 10 == 0:
+            print(f"Step {step} | Loss: {torch.mean(torch.tensor(losses)).item():.4f}")
+            print(chat("What is the capital of France?", only_answer=True))
+            losses = []
+
+        if step >= max_steps:
+            break
+
+    return model
+
+# ✅ Sample Test Case: Synthetic Dataset
+def test_train():
+    batch_size, seq_len = 2, 20
+    torch.manual_seed(42)
+
+    # Dummy dataset
+    sample_data = {
+        "instruction": ["What is 2+2?", "Who discovered gravity?"],
+        "response": ["Four!", "Isaac Newton"]
+    }
+
+    dataset = [
+        {"instruction": sample_data["instruction"][i], "response": sample_data["response"][i]}
+        for i in range(batch_size)
+    ]
+
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+
+    trained_model = train(model, dataloader, tokenizer, max_steps=5)
+    print("✅ Training complete!")
+
+# Run test case
+test_train()
