@@ -1,0 +1,6 @@
+# Load the tokenizer for Gemma 2B
+model_id = "unsloth/gemma-2-2b-it" #"google/gemma-2-2b-it"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+# How big is the tokenizer?
+print(f"Vocab size: {len(tokenizer.get_vocab())}")
