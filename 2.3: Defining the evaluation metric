@@ -1,0 +1,58 @@
+import json
+from opik.evaluation.metrics import base_metric, score_result
+
+class LLMJudgeEvaluator(base_metric.BaseMetric):
+    def __init__(self, judge, system_prompt="You are an AI judge. Score the given response based on accuracy and style. Return a JSON object with {'score': <0-10>}"):
+        self.judge = judge
+        self.system_prompt = system_prompt
+        self.prompt_template = "Evaluate this text: {text}"
+
+    def score(self, text: str, n_tries=3):
+        """Evaluate by asking an LLM to score the text."""
+
+        for attempt in range(n_tries):
+            try:
+                # ✅ Format the prompt correctly
+                prompt = self.prompt_template.format(text=text)
+
+                # ✅ Call the judge LLM with the system prompt & stop at "}"
+                response = self.judge.ask(
+                    prompt=prompt,
+                    system_prompt=self.system_prompt,
+                    temperature=0.5,
+                    stop=["}"]  # Stops generation after closing JSON
+                )
+
+                # ✅ Ensure valid JSON structure
+                response_text = response.strip() + "}"
+                res_dict = json.loads(response_text)
+
+                # ✅ Extract score and normalize (0 to 1)
+                max_score = 10
+                score = res_dict.get("score", 0) / max_score  # Default to 0 if missing
+                score = max(0.0, min(score, 1.0))  # Clip between 0 and 1
+
+                # ✅ Return a structured ScoreResult
+                return score_result.ScoreResult(name="StyleScore", value=score)
+
+            except Exception as e:
+                if attempt == n_tries - 1:  # Last attempt
+                    raise e  # If all retries fail, raise the error
+                continue  # Retry if an exception occurs
+
+# ✅ TEST CASE
+if __name__ == "__main__":
+    from mdl.lab3 import LLMClient  # Ensure LLMClient is properly defined
+
+    # Initialize a judge model (Replace with your actual OpenRouter key)
+    OPENROUTER_API_KEY = "your_api_key_here"
+    judge_model = LLMClient(model="liquid/lfm-40b", api_key=OPENROUTER_API_KEY)
+
+    # Create evaluator instance
+    evaluator = LLMJudgeEvaluator(judge=judge_model)
+
+    # Sample evaluation
+    test_text = "The capital of France is Paris."
+    result = evaluator.score(test_text)
+
+    print(f"Evaluation Result: {result.value * 10}/10")
