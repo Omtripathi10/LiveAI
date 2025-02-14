@@ -1,0 +1,18 @@
+!pip install transformers
+
+from transformers import AutoTokenizer
+
+# Load a tokenizer (using a commonly available one)
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+
+# Test text
+text = "Here is some sample text!"
+print(f"Original text: {text}")
+
+# Tokenize the text
+tokens = tokenizer.encode(text, return_tensors="pt")
+print(f"Encoded tokens: {tokens}")
+
+# Decode the tokens
+decoded_text = tokenizer.decode(tokens[0], skip_special_tokens=True)
+print(f"Decoded text: {decoded_text}")
