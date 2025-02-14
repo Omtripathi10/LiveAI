@@ -1,0 +1,51 @@
+import torch
+import torch.nn.functional as F
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# ✅ Load Model & Tokenizer with CPU Offloading
+model_id = "google/gemma-2b"
+
+# Login to Hugging Face to access gated models
+from huggingface_hub import login
+login("your_huggingface_access_token")  # <-- Use your actual Hugging Face token here
+
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    torch_dtype=torch.float16,  # Reduce memory usage
+    device_map="cpu"            # Force CPU execution
+)
+
+# ✅ Define Prompt Templates
+template_without_answer = "<start_of_turn>user\n{question}<end_of_turn>\n<start_of_turn>model\n"
+
+def chat(question, max_new_tokens=32, temperature=0.7, only_answer=False):
+    # 1. Construct the prompt using the template
+    prompt = template_without_answer.format(question)
+
+    # 2. Tokenize the text
+    input_ids = tokenizer(prompt, return_tensors="pt").to("cpu")  # Force CPU usage
+
+    # 3. Generate response from model
+    with torch.no_grad():
+        outputs = model.generate(
+            input_ids.input_ids,
+            do_sample=True,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature
+        )
+
+    # 4. Extract the answer part if needed
+    output_tokens = outputs[0]
+    if only_answer:
+        output_tokens = output_tokens[input_ids.input_ids.shape[1]:]
+
+    # 5. Decode the tokens
+    result = tokenizer.decode(output_tokens, skip_special_tokens=True)
+
+    return result
+
+# ✅ Test the function
+response = chat("What is the capital of France?")
+print("Generated Response:", response)
