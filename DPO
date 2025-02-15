@@ -1,0 +1,219 @@
+import os
+import gc
+import torch
+import transformers
+
+# Ensure required packages are installed
+required_packages = ["bitsandbytes", "datasets", "peft", "trl", "sentencepiece", "wandb"]
+for package in required_packages:
+    try:
+        __import__(package)
+    except ImportError:
+        import subprocess
+        subprocess.run(["pip", "install", package], check=True)
+
+import bitsandbytes as bnb
+import datasets
+import peft
+import trl
+import sentencepiece
+import wandb
+
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, BitsAndBytesConfig
+from datasets import load_dataset
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+from trl import DPOTrainer, DPOConfig
+from huggingface_hub import HfApi
+
+# Set Hugging Face and Weights & Biases tokens
+hf_token = os.getenv("HF_TOKEN")
+wb_token = os.getenv("WANDB_API_KEY")
+
+if not hf_token:
+    hf_token = input("Enter your Hugging Face token: ")
+    os.environ["HF_TOKEN"] = hf_token
+if not wb_token:
+    wb_token = input("Enter your Weights & Biases API key: ")
+    os.environ["WANDB_API_KEY"] = wb_token
+
+# Login to Weights & Biases
+wandb.login(key=wb_token)
+
+# Define model details
+model_name = "Tannistha/sft_model"  # Existing model on Hugging Face Hub
+new_model = "NeuralHermes-2.5-Mistral-7B"  # New model to work with
+
+# Function to delete a model from Hugging Face Hub
+def delete_hf_model(model_name, token):
+    """Deletes a model repository from Hugging Face Hub."""
+    try:
+        api = HfApi()
+        api.delete_repo(model_name, token=token)
+        print(f"Model {model_name} successfully deleted from Hugging Face Hub.")
+    except Exception as e:
+        print(f"Error deleting model: {e}")
+
+# Test case to verify model deletion
+def test_delete_model():
+    """Test case for deleting a model repository."""
+    test_model = "your_test_model"  # Change this to a test repository
+    delete_hf_model(test_model, hf_token)
+
+# Garbage collection to free up memory
+def cleanup():
+    gc.collect()
+    torch.cuda.empty_cache()
+
+# Run test case
+test_delete_model()
+cleanup()
+
+# BitsAndBytes Configuration Module
+def configure_bitsandbytes():
+    """Configures BitsAndBytes for optimized model loading."""
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,  # Enable 4-bit precision loading
+        bnb_4bit_quant_type="nf4",  # Use NormalFloat4 quantization
+        bnb_4bit_use_double_quant=True,  # Double quantization for efficiency
+        bnb_4bit_compute_dtype=torch.float16  # Compute dtype set to float16
+    )
+    print("BitsAndBytes configuration set successfully.")
+    return bnb_config
+
+# Run BitsAndBytes configuration
+bnb_config = configure_bitsandbytes()
+
+# Function to apply the DPO template to a dataset sample
+def apply_dpo_template(sample, tokenizer):
+    """Processes a dataset sample to extract and format chat responses."""
+    try:
+        # Extracts the last message before the assistant's response
+        prompt_message = [sample["chosen"][-2]]
+
+        # Extracts the final chosen and rejected responses
+        sample["chosen_final"] = sample["chosen"][-1]["content"] + "\n"
+        sample["rejected_final"] = sample["rejected"][-1]["content"] + "\n"
+
+        # Applies a chat template for structured tokenization
+        sample["prompt_final"] = tokenizer.apply_chat_template(
+            prompt_message, tokenize=False, add_generation_prompt=True
+        )
+    
+        return sample
+    except KeyError as e:
+        print(f"KeyError: {e}. Check if 'chosen' and 'rejected' are correctly structured in the dataset.")
+        return None
+# Load dataset from Hugging Face Hub
+dataset = load_dataset(
+    "HuggingFaceH4/ultrafeedback_binarized", split="train_prefs[:100]"
+)
+
+# Initialize tokenizer
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer.pad_token = tokenizer.eos_token  # Set padding token
+tokenizer.padding_side = "left"  # Set padding side
+
+# Apply DPO template transformation
+dataset = dataset.map(
+    apply_dpo_template, 
+    fn_kwargs={"tokenizer": tokenizer}, 
+    remove_columns=[
+        'prompt', 'prompt_id', 'chosen', 'rejected', 'messages', 'score_chosen', 'score_rejected'
+    ]
+)
+
+# Rename columns for consistency
+dataset = dataset.rename_column("chosen_final", "chosen")
+dataset = dataset.rename_column("rejected_final", "rejected")
+dataset = dataset.rename_column("prompt_final", "prompt")
+
+# Save original columns for potential formatting later
+original_columns = dataset.column_names
+
+# Print sample to verify dataset structure
+print(dataset[1])
+# Load dataset from Hugging Face Hub
+dataset = load_dataset(
+    "HuggingFaceH4/ultrafeedback_binarized", split="train_prefs[:100]"
+)
+
+# Initialize tokenizer
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer.pad_token = tokenizer.eos_token  # Set padding token
+tokenizer.padding_side = "left"  # Set padding side
+
+# Apply DPO template transformation
+dataset = dataset.map(
+    apply_dpo_template, 
+    fn_kwargs={"tokenizer": tokenizer}, 
+    remove_columns=[
+        'prompt', 'prompt_id', 'chosen', 'rejected', 'messages', 'score_chosen', 'score_rejected'
+    ]
+)
+
+# Rename columns for consistency
+dataset = dataset.rename_column("chosen_final", "chosen")
+dataset = dataset.rename_column("rejected_final", "rejected")
+dataset = dataset.rename_column("prompt_final", "prompt")
+
+# Save original columns for potential formatting later
+original_columns = dataset.column_names
+
+# Print sample to verify dataset structure
+print(dataset[1])
+
+# LoRA configuration for fine-tuning
+peft_config = LoraConfig(
+    r=16,
+    lora_alpha=16,
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM",
+    target_modules=['k_proj', 'gate_proj', 'v_proj', 'up_proj', 'q_proj', 'o_proj', 'down_proj']
+)
+
+# Load pre-trained model with LoRA adaptation
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16,
+    load_in_4bit=True
+)
+model.config.use_cache = False
+
+# Apply LoRA adapter to model
+model = get_peft_model(model, peft_config)
+print("Adapters added to the model.")
+print("Active adapters:", model.active_adapters)
+
+# Training configuration
+training_args = DPOConfig(
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=4,
+    gradient_checkpointing=True,
+    learning_rate=5e-5,
+    lr_scheduler_type="cosine",
+    max_steps=200,
+    save_strategy="no",
+    logging_steps=1,
+    output_dir=new_model,
+    optim="paged_adamw_32bit",
+    warmup_steps=100,
+    bf16=True,
+    report_to="wandb",
+    beta=0.1,
+    max_prompt_length=1024,
+    max_length=1536,
+)
+
+# Create DPO trainer
+dpo_trainer = DPOTrainer(
+    model,
+    args=training_args,
+    train_dataset=dataset,
+    tokenizer=tokenizer,
+    peft_config=peft_config,
+)
+
+# Start fine-tuning
+dpo_trainer.train()
+print("Fine-tuning completed successfully!")
